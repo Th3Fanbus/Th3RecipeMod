@@ -17,6 +17,8 @@
 #include <Unlocks/FGUnlockInfoOnly.h>
 #include <Unlocks/FGUnlockRecipe.h>
 #include <Unlocks/FGUnlockSchematic.h>
+#include <Engine/AssetManager.h>
+#include <Engine/StreamableManager.h>
 
 #include "Th3RootInstance.generated.h"
 
@@ -39,6 +41,9 @@ private:
 	UPROPERTY();
 	TArray<UFGUnlockRecipe*> ModifiedUnlockRecipes;
 
+	UPROPERTY()
+	TArray<TSoftClassPtr<UFGSchematic>> SchematicPtrs;
+
 	TArray<UFGSchematic*> VisitedSchematics;
 	TArray<TSubclassOf<UFGRecipe>> RecipesToRegister;
 
@@ -60,14 +65,35 @@ protected:
 	void MakeCompressionRecipes(const TSubclassOf<UFGItemDescriptor>& OrigItem, const TSubclassOf<UFGItemDescriptor>& NewItem);
 	UTexture2D* GetItemIcon(UFGItemDescriptor* OrigCDO);
 	TSubclassOf<UFGItemDescriptor> CompressedFormOf(const TSubclassOf<UFGItemDescriptor>& OrigItem);
-	bool CanRecipeBeCompressed(const TSubclassOf<UFGRecipe>& Recipe);
+	bool InvokeRecipePredicate(const TSubclassOf<UFGRecipe>& Recipe, const TFunction<bool(const UFGRecipe*)> InPredicate);
+	bool IsCraftingRecipeCompressible(const TSubclassOf<UFGRecipe>& Recipe);
+	bool IsBuildingRecipeCompressible(const TSubclassOf<UFGRecipe>& Recipe);
 	TSubclassOf<UFGCategory> CompressCategory(const TSubclassOf<UFGCategory>& OrigCat);
-	TSubclassOf<UFGRecipe> CompressRecipe(const TSubclassOf<UFGRecipe>& OrigRecipe);
-	void CompressAllRecipes();
+	TSubclassOf<UFGRecipe> CompressCraftingRecipe(const TSubclassOf<UFGRecipe>& OrigRecipe);
 	void ProcUnlockRecipe(UFGUnlock* InUnlock);
 	void ProcUnlockSchematic(UFGUnlock* InUnlock);
 	void CompressSchematicUnlocks(const TSubclassOf<UFGSchematic>& Schematic);
+	void CompressOneSchematic(const TSoftClassPtr<UFGSchematic>& SchematicPtr);
 	void CompressAllSchematics();
+
+	void Process(UClass* BaseClass, const TFunction<void(const TArray<FSoftObjectPath>&)> StoreList, const TFunction<void()> Callback)
+	{
+		const FString ClassName = BaseClass->GetName();
+		UE_LOG(LogTh3RootInstance, Display, TEXT("Looking for '%s'..."), *ClassName);
+		TSet<FTopLevelAssetPath> AssetPaths;
+		Th3Utilities::DiscoverSubclassesOf(AssetPaths, BaseClass);
+		TArray<FSoftObjectPath> SoftPaths;
+		Algo::Transform(AssetPaths, SoftPaths, [](const FTopLevelAssetPath& AssetPath) { return FSoftObjectPath(AssetPath); });
+		Invoke(StoreList, SoftPaths);
+		UE_LOG(LogTh3RootInstance, Display, TEXT("Processing %d '%s'..."), AssetPaths.Num(), *ClassName);
+		const double Begin = FPlatformTime::Seconds();
+		UAssetManager::GetStreamableManager().RequestAsyncLoad(SoftPaths, [Begin, ClassName, Callback]() {
+			const double End = FPlatformTime::Seconds();
+			UE_LOG(LogTh3RootInstance, Warning, TEXT("Took %f ms to load '%s'"), (End - Begin) * 1000, *ClassName);
+			Invoke(Callback);
+			UE_LOG(LogTh3RootInstance, Display, TEXT("Done processing '%s'"), *ClassName);
+		}, FStreamableManager::AsyncLoadHighPriority);
+	}
 public:
 	UPROPERTY(EditDefaultsOnly, Category = "Mod Configuration")
 	const TSubclassOf<UFGItemCategory> CompressionCategory;

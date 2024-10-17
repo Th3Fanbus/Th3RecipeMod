@@ -12,28 +12,29 @@
 
 DEFINE_LOG_CATEGORY(LogTh3Utilities);
 
-UClass* Th3Utilities::GenerateNewClass(const TCHAR* Package, FString Name, UClass* ParentClass)
+UClass* Th3Utilities::GenerateNewClass(const FString& Package, const FString& Name, UClass* ParentClass)
 {
 	if (Name == "") {
 		UE_LOG(LogTh3Utilities, Fatal, TEXT("Name was empty, can't create class"));
 		return nullptr;
 	}
-	FTopLevelAssetPath Path = FTopLevelAssetPath(FString::Printf(TEXT("%s%s"), Package, *Name));
+	FTopLevelAssetPath Path = FTopLevelAssetPath(FString::Printf(TEXT("%s.%s"), *Package, *Name));
 	if (FindObject<UClass>(Path)) {
 		UE_LOG(LogTh3Utilities, Error, TEXT("Class for name %s already exists"), *Name);
 		UE_LOG(LogTh3Utilities, Fatal, TEXT("Found %s"), *Path.ToString());
 		return nullptr;
 	}
-	FTopLevelAssetPath Path_C = FTopLevelAssetPath(FString::Printf(TEXT("%s%s_C"), Package, *Name));
+	FTopLevelAssetPath Path_C = FTopLevelAssetPath(FString::Printf(TEXT("%s.%s_C"), *Package, *Name));
 	if (FindObject<UClass>(Path_C)) {
 		UE_LOG(LogTh3Utilities, Error, TEXT("Class for name %s already exists"), *Name);
 		UE_LOG(LogTh3Utilities, Fatal, TEXT("Found %s"), *Path_C.ToString());
 		return nullptr;
 	}
-	return FClassGenerator::GenerateSimpleClass(Package, *Name, ParentClass);
+	UE_LOG(LogTh3Utilities, Log, TEXT("Generating class '%s.%s'"), *Package, *Name);
+	return FClassGenerator::GenerateSimpleClass(*Package, *Name, ParentClass);
 }
 
-static FString PrintObjStrings(const FString& Indent, const FString& Descriptor, UObject* Obj)
+static FString PrintObjStrings(const FString& Indent, const FString& Descriptor, const UObject* Obj)
 {
 	FString Data;
 	if (Obj) {
@@ -44,7 +45,7 @@ static FString PrintObjStrings(const FString& Indent, const FString& Descriptor,
 	return Data;
 }
 
-static FString PrintObjClassStrings(const FString& Indent, const FString& Descriptor, UObject* Obj)
+static FString PrintObjClassStrings(const FString& Indent, const FString& Descriptor, const UObject* Obj)
 {
 	FString Data;
 	if (Obj) {
@@ -54,12 +55,12 @@ static FString PrintObjClassStrings(const FString& Indent, const FString& Descri
 	return Data;
 }
 
-void Th3Utilities::DumpObjectProperties(UObject* Obj, const FString& Indent, FString& Data)
+void Th3Utilities::DumpObjectProperties(const UObject* Obj, const FString& Indent, FString& Data)
 {
 	if (Obj) {
-		Data += PrintObjStrings(Indent, TEXT(" Object"), Obj);
-		Data += PrintObjStrings(Indent, TEXT("  Outer"), Obj->GetOuter());
-		Data += PrintObjStrings(Indent, TEXT("Package"), Obj->GetPackage());
+		Data += PrintObjClassStrings(Indent, TEXT(" Object"), Obj);
+		Data += PrintObjClassStrings(Indent, TEXT("  Outer"), Obj->GetOuter());
+		Data += PrintObjClassStrings(Indent, TEXT("Package"), Obj->GetPackage());
 		UClass* Class = Obj->GetClass();
 		while (Class) {
 			Data += FString::Printf(TEXT("%s- Properties inherited from class '%s'\n"), *Indent, *Class->GetName());
@@ -76,7 +77,7 @@ void Th3Utilities::DumpObjectProperties(UObject* Obj, const FString& Indent, FSt
 	}
 }
 
-void Th3Utilities::SaveObjectProperties(UObject* Obj, const FString& FolderName, FString& Data)
+void Th3Utilities::SaveObjectProperties(const UObject* Obj, const FString& FolderName, FString& Data)
 {
 	if (Obj) {
 		DumpObjectProperties(Obj, TEXT(""), Data);

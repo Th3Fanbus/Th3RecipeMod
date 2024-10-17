@@ -6,24 +6,19 @@ public class Th3RecipeMod : ModuleRules
 {
     public Th3RecipeMod(ReadOnlyTargetRules Target) : base(Target)
     {
-        PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
+        DefaultBuildSettings = BuildSettingsVersion.Latest;
+        ShadowVariableWarningLevel = WarningLevel.Error;
+        PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+        bLegacyParentIncludePaths = false;
+        CppStandard = CppStandardVersion.Cpp20;
         bUseUnity = false;
 
-        PublicDependencyModuleNames.AddRange(new[] {
-            "Core",
-            "CoreUObject",
-            "Engine",
-            "AssetRegistry",
-			"SML"
+        PublicDependencyModuleNames.AddRange(new string[] {
+            "Core", "CoreUObject", "Engine",
+            "DeveloperSettings", "PhysicsCore", "InputCore",
+            "AssetRegistry", "RenderCore", "RHI",
+            "SlateCore", "Slate", "UMG", "GameplayTags",
+            "DummyHeaders", "FactoryGame", "SML",
         });
-
-        PrivateDependencyModuleNames.AddRange(new[] {
-            "CoreUObject",
-            "Engine",
-            "DummyHeaders",
-            "SML"
-		});
-
-        PublicDependencyModuleNames.AddRange(new string[] { "FactoryGame", "SML" });
     }
 }

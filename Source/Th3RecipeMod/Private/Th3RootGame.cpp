@@ -54,13 +54,13 @@ void UTh3RootGame::DispatchLifecycleEvent(ELifecyclePhase Phase)
 
 	UE_LOG(LogTh3RootGame, Display, TEXT("Dispatching Phase %s on %s"), *LifecyclePhaseToString(Phase), *this->GetPathName());
 
-	UTh3RootInstance* RootInstance = dynamic_cast<UTh3RootInstance*>(GetTh3RootInstance());
+	UTh3RootInstance* RootInstance = Cast<UTh3RootInstance>(GetTh3RootInstance());
 	if (not RootInstance) {
 		UE_LOG(LogTh3RootGame, Error, TEXT("Game World module could not find Game Instance module"));
 		return;
 	}
 
-	if (Phase == ELifecyclePhase::INITIALIZATION) {
+	if (Phase == ELifecyclePhase::POST_INITIALIZATION) {
 		AFGRecipeManager* RecipeManager = AFGRecipeManager::Get(GetWorld());
 		if (not RecipeManager) {
 			UE_LOG(LogTh3RootGame, Error, TEXT("Could not find recipe manager, not registering %d recipes"), RootInstance->RecipesToRegister.Num());
@@ -69,8 +69,7 @@ void UTh3RootGame::DispatchLifecycleEvent(ELifecyclePhase Phase)
 		UE_LOG(LogTh3RootGame, Display, TEXT("Making %d (de)compression recipes available..."), RootInstance->RecipesToRegister.Num());
 		Algo::ForEach(RootInstance->RecipesToRegister, [&RecipeManager](const auto& Recipe) { RecipeManager->AddAvailableRecipe(Recipe); });
 		UE_LOG(LogTh3RootGame, Display, TEXT("Made (de)compression recipes available"));
-	}
-	if (Phase == ELifecyclePhase::POST_INITIALIZATION) {
+
 		AFGResourceSinkSubsystem* SinkSubsystem = AFGResourceSinkSubsystem::Get(GetWorld());
 		if (not SinkSubsystem) {
 			UE_LOG(LogTh3RootGame, Error, TEXT("Could not find resource sink subsystem, compressed items cannot be sunk"));

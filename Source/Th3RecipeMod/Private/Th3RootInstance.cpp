@@ -6,6 +6,8 @@
 #include <Containers/EnumAsByte.h>
 #include <Reflection/ClassGenerator.h>
 #include <Registry/ModContentRegistry.h>
+#include <Resources/FGBuildingDescriptor.h>
+#include <Buildables/FGBuildableGeneratorFuel.h>
 #include <FGCustomizationRecipe.h>
 #include <FGRecipe.h>
 #include <FGRecipeManager.h>
@@ -34,6 +36,29 @@ UTh3RootInstance::~UTh3RootInstance()
 	UE_LOG(LogTh3RootInstance, Display, TEXT("Goodbye Cruel Game Instance"));
 }
 
+TSubclassOf<UFGCategory> UTh3RootInstance::CompressCategory(const TSubclassOf<UFGCategory>& OrigCat)
+{
+	/* Garbage in, garbage out */
+	if (not OrigCat) {
+		return OrigCat;
+	}
+	TSubclassOf<UFGCategory>* NewCatPtr = CategoryToCompressedMap.Find(OrigCat);
+	if (NewCatPtr) {
+		return *NewCatPtr;
+	}
+	UE_LOG(LogTh3RootInstance, Verbose, TEXT("Compressing Category %s"), *OrigCat->GetPathName());
+	TSubclassOf<UFGCategory> NewCat = Th3Utilities::CopyClassWithPrefix(OrigCat, MOD_TRANSIENT_ROOT / TEXT("Categories"), TEXT("Compressed"));
+
+	UFGCategory* OrigCDO = OrigCat.GetDefaultObject();
+	UFGCategory* NewCDO = NewCat.GetDefaultObject();
+
+	NewCDO->mDisplayName = CompressDisplayName(OrigCDO->mDisplayName);
+	NewCDO->mMenuPriority += CAT_PRIORITY_DELTA;
+
+	CategoryToCompressedMap.Add(OrigCat, NewCat);
+	return NewCat;
+}
+
 void UTh3RootInstance::MakeConversionRecipe(const FItemAmount& Ingredients, const FItemAmount& Products)
 {
 	const bool IsCompressionRecipe = Ingredients.Amount > Products.Amount;
@@ -43,7 +68,7 @@ void UTh3RootInstance::MakeConversionRecipe(const FItemAmount& Ingredients, cons
 	const FString RecipeType = FString(IsCompressionRecipe ? TEXT("Compression") : TEXT("Decompression"));
 	const FString PackagePath = MOD_TRANSIENT_ROOT / TEXT("Recipes") / RecipeType / BaseItem->GetPackage()->GetName();
 	const FString ClassName = FString::Printf(TEXT("Recipe_%s_%s"), *RecipeType, *BaseItem->GetName());
-	TSubclassOf<UFGRecipe> Recipe = Th3Utilities::GenerateNewClass(*PackagePath, ClassName, UFGRecipe::StaticClass());
+	TSubclassOf<UFGRecipe> Recipe = Th3Utilities::GenerateNewClass(PackagePath, ClassName, UFGRecipe::StaticClass());
 	if (not Recipe) {
 		UE_LOG(LogTh3RootInstance, Fatal, TEXT("Failed to generate %s recipe for %s %s"), *RecipeType, *PackagePath, *ClassName);
 		return;
@@ -100,6 +125,8 @@ TSubclassOf<UFGItemDescriptor> UTh3RootInstance::CompressedFormOf(const TSubclas
 	NewCDO->mRadioactiveDecay *= CompressionRatio;
 	NewCDO->mCategory = CompressCategory(OrigCDO->mCategory);
 
+	UE_LOG(LogTh3RootInstance, Error, TEXT("ENERGY VALUE IS %f ---> %f FOR %s"), OrigCDO->mEnergyValue, NewCDO->mEnergyValue, *OrigItem->GetPathName());
+
 	UE_LOG(LogTh3RootInstance, Log, TEXT(" -  Compressing Item Icon for %s"), *OrigItem->GetPathName());
 
 	UTexture2D* OrigIcon = OrigCDO->mPersistentBigIcon ? OrigCDO->mPersistentBigIcon : OrigCDO->mSmallIcon;
@@ -115,9 +142,11 @@ TSubclassOf<UFGItemDescriptor> UTh3RootInstance::CompressedFormOf(const TSubclas
 	return NewItem;
 }
 
-static bool SoftPtrAssetNameContains(const TSoftClassPtr<UObject>& Producer, const TCHAR* ClassName)
+static TFunction<bool(const TSoftClassPtr<UObject>)> SoftPtrAssetNameContains(const TCHAR* ClassName)
 {
-	return Producer.GetAssetName().Contains(FString(ClassName));
+	return [ClassName](const TSoftClassPtr<UObject>& Obj) {
+		return Obj.GetAssetName().Contains(ClassName);
+	};
 }
 
 static int32 GetStackSize(const FItemAmount& Amount)
@@ -125,7 +154,7 @@ static int32 GetStackSize(const FItemAmount& Amount)
 	return Amount.ItemClass.GetDefaultObject()->GetStackSize(Amount.ItemClass);
 }
 
-bool UTh3RootInstance::CanRecipeBeCompressed(const TSubclassOf<UFGRecipe>& Recipe)
+bool UTh3RootInstance::InvokeRecipePredicate(const TSubclassOf<UFGRecipe>& Recipe, const TFunction<bool(const UFGRecipe*)> InPredicate)
 {
 	/* Do not compress invalid recipe classes */
 	if (not Recipe) {
@@ -143,62 +172,48 @@ bool UTh3RootInstance::CanRecipeBeCompressed(const TSubclassOf<UFGRecipe>& Recip
 	if (RecipeCDO->mProducedIn.IsEmpty()) {
 		return false;
 	}
-	/* Do not compress Upgradeable Machines' upgrade packs */
-	if (Recipe->GetPackage()->GetName().StartsWith(TEXT("/UpgradeableMachines/"))) {
-		return false;
-	}
-	/* Do not compress Build Gun recipes */
-	const auto IsBuildGunRecipe = [](const TSoftClassPtr<UObject>& Producer) { return SoftPtrAssetNameContains(Producer, TEXT("BuildGun")); };
-	if (Algo::AnyOf(RecipeCDO->mProducedIn, IsBuildGunRecipe)) {
-		return false;
-	}
-	/* Do not compress Customizer recipes */
-	if (RecipeCDO->mMaterialCustomizationRecipe.Get()) {
-		return false;
-	}
 	/* Do not compress our own (de)compression recipes */
 	if (RecipesToRegister.Contains(Recipe)) {
 		UE_LOG(LogTh3RootInstance, Error, TEXT("[MOD BUG] Attempted to re-compress Recipe %s"), *Recipe->GetPathName());
 		return false;
 	}
-	/*
-	 * Do not compress recipes involving items whose stack size is
-	 * too small to be compressed continuously (2x in the check).
-	 */
-	const auto IsStackSizeEnough = [this](const FItemAmount& Amount) { return ItemToCompressedMap.Contains(Amount.ItemClass) or GetStackSize(Amount) >= 2 * CompressionRatio; };
-	if (not Algo::AllOf(RecipeCDO->mIngredients, IsStackSizeEnough)) {
-		return false;
-	}
-	if (not Algo::AllOf(RecipeCDO->mProduct, IsStackSizeEnough)) {
-		return false;
-	}
-	return true;
+	return Invoke(InPredicate, RecipeCDO);
 }
 
-TSubclassOf<UFGCategory> UTh3RootInstance::CompressCategory(const TSubclassOf<UFGCategory>& OrigCat)
+bool UTh3RootInstance::IsCraftingRecipeCompressible(const TSubclassOf<UFGRecipe>& Recipe)
 {
-	/* Garbage in, garbage out */
-	if (not OrigCat) {
-		return OrigCat;
-	}
-	TSubclassOf<UFGCategory>* NewCatPtr = CategoryToCompressedMap.Find(OrigCat);
-	if (NewCatPtr) {
-		return *NewCatPtr;
-	}
-	UE_LOG(LogTh3RootInstance, Verbose, TEXT("Compressing Category %s"), *OrigCat->GetPathName());
-	TSubclassOf<UFGCategory> NewCat = Th3Utilities::CopyClassWithPrefix(OrigCat, MOD_TRANSIENT_ROOT / TEXT("Categories"), TEXT("Compressed"));
-
-	UFGCategory* OrigCDO = OrigCat.GetDefaultObject();
-	UFGCategory* NewCDO = NewCat.GetDefaultObject();
-
-	NewCDO->mDisplayName = CompressDisplayName(OrigCDO->mDisplayName);
-	NewCDO->mMenuPriority += CAT_PRIORITY_DELTA;
-
-	CategoryToCompressedMap.Add(OrigCat, NewCat);
-	return NewCat;
+	return InvokeRecipePredicate(Recipe, [this](const UFGRecipe* RecipeCDO) {
+		/* Do not compress Upgradeable Machines' upgrade packs */
+		if (RecipeCDO->GetClass()->GetPackage()->GetName().StartsWith(TEXT("/UpgradeableMachines/"))) {
+			return false;
+		}
+		/* Do not compress Build Gun recipes */
+		const auto IsBuildGunRecipe = SoftPtrAssetNameContains(TEXT("BuildGun"));
+		if (Algo::AnyOf(RecipeCDO->mProducedIn, IsBuildGunRecipe)) {
+			return false;
+		}
+		/* Do not compress Customizer recipes */
+		if (RecipeCDO->mMaterialCustomizationRecipe.Get()) {
+			return false;
+		}
+		/*
+		 * Do not compress recipes involving items whose stack size is
+		 * too small to be compressed continuously (2x in the check).
+		 */
+		const auto IsStackSizeEnough = [this](const FItemAmount& Amount) {
+			return ItemToCompressedMap.Contains(Amount.ItemClass) or GetStackSize(Amount) >= 2 * CompressionRatio;
+		};
+		if (not Algo::AllOf(RecipeCDO->mIngredients, IsStackSizeEnough)) {
+			return false;
+		}
+		if (not Algo::AllOf(RecipeCDO->mProduct, IsStackSizeEnough)) {
+			return false;
+		}
+		return true;
+	});
 }
 
-TSubclassOf<UFGRecipe> UTh3RootInstance::CompressRecipe(const TSubclassOf<UFGRecipe>& OrigRecipe)
+TSubclassOf<UFGRecipe> UTh3RootInstance::CompressCraftingRecipe(const TSubclassOf<UFGRecipe>& OrigRecipe)
 {
 	TSubclassOf<UFGRecipe>* NewRecipePtr = RecipeToCompressedMap.Find(OrigRecipe);
 	if (NewRecipePtr) {
@@ -212,7 +227,9 @@ TSubclassOf<UFGRecipe> UTh3RootInstance::CompressRecipe(const TSubclassOf<UFGRec
 	if (NewCDO->mDisplayNameOverride) {
 		NewCDO->mDisplayName = CompressDisplayName(OrigCDO->mDisplayName);
 	}
-	const auto CompressItemAmounts = [this](const FItemAmount& Amount) { return FItemAmount(CompressedFormOf(Amount.ItemClass), Amount.Amount); };
+	const auto CompressItemAmounts = [this](const FItemAmount& Amount) {
+		return FItemAmount(CompressedFormOf(Amount.ItemClass), Amount.Amount);
+	};
 	NewCDO->mIngredients.Empty();
 	NewCDO->mProduct.Empty();
 	NewCDO->mManufactoringDuration *= CompressionRatio;
@@ -226,15 +243,89 @@ TSubclassOf<UFGRecipe> UTh3RootInstance::CompressRecipe(const TSubclassOf<UFGRec
 	return NewRecipe;
 }
 
-void UTh3RootInstance::CompressAllRecipes()
+bool UTh3RootInstance::IsBuildingRecipeCompressible(const TSubclassOf<UFGRecipe>& Recipe)
 {
-	UE_LOG(LogTh3RootInstance, Warning, TEXT("GET RECIPES START"));
-
-	TSet<FTopLevelAssetPath> AllRecipes;
-	Th3Utilities::DiscoverSubclassesOf(AllRecipes, UFGRecipe::StaticClass());
-	UE_LOG(LogTh3RootInstance, Warning, TEXT("GET RECIPES GOT THEM"));
-	Th3Utilities::TransformForEachIf(AllRecipes, Th3Utilities::LoadTopLevelPathSync<UFGRecipe>, TH3_PROJECTION_THIS(CanRecipeBeCompressed), TH3_PROJECTION_THIS(CompressRecipe));
-	UE_LOG(LogTh3RootInstance, Warning, TEXT("GET RECIPES PROCESS END"));
+	/* Do not compress invalid recipe classes */
+	if (not Recipe) {
+		UE_LOG(LogTh3RootInstance, Error, TEXT("Someone registered a nullptr recipe"));
+		return false;
+	}
+	UE_LOG(LogTh3RootInstance, Warning, TEXT("Considering Recipe %s"), *Recipe->GetPathName());
+	const UFGRecipe* RecipeCDO = Recipe.GetDefaultObject();
+	/* Do not compress invalid recipes */
+	if (not RecipeCDO) {
+		UE_LOG(LogTh3RootInstance, Error, TEXT("%s has a nullptr CDO"), *Recipe->GetPathName());
+		return false;
+	}
+	/* Do not compress recipes that cannot be produced anywhere */
+	if (RecipeCDO->mProducedIn.IsEmpty()) {
+		return false;
+	}
+	/* Do not compress our own (de)compression recipes */
+	if (RecipesToRegister.Contains(Recipe)) {
+		UE_LOG(LogTh3RootInstance, Error, TEXT("[MOD BUG] Attempted to re-compress Recipe %s"), *Recipe->GetPathName());
+		return false;
+	}
+	/* Only compress Build Gun recipes */
+	const auto IsBuildGunRecipe = SoftPtrAssetNameContains(TEXT("BuildGun"));
+	if (Algo::NoneOf(RecipeCDO->mProducedIn, IsBuildGunRecipe)) {
+		return false;
+	}
+	/* Do not compress Customizer recipes */
+	if (RecipeCDO->mMaterialCustomizationRecipe.Get()) {
+		return false;
+	}
+	if (RecipeCDO->mProduct.Num() != 1) {
+		UE_LOG(LogTh3RootInstance, Error, TEXT("Build Gun recipe %s has %d products"),
+			   *RecipeCDO->GetPathName(), RecipeCDO->mProduct.Num());
+		return false;
+	}
+	const TSubclassOf<UFGItemDescriptor> BuildingItem = RecipeCDO->mProduct[0].ItemClass;
+	if (not BuildingItem) {
+		UE_LOG(LogTh3RootInstance, Error, TEXT("Build Gun recipe %s produces an invalid item descriptor"),
+			   *RecipeCDO->GetPathName());
+		return false;
+	}
+	if (RecipeCDO->mProduct[0].Amount != 1) {
+		UE_LOG(LogTh3RootInstance, Error, TEXT("Build Gun recipe %s produces %d of %s"),
+			   *RecipeCDO->GetPathName(), RecipeCDO->mProduct[0].Amount, *BuildingItem->GetPathName());
+		return false;
+	}
+	const TSubclassOf<UFGBuildingDescriptor> BuildingDesc = *BuildingItem;
+	if (not BuildingDesc) {
+		UE_LOG(LogTh3RootInstance, Error, TEXT("Build Gun recipe %s produces non-UFGBuildingDescriptor %s"),
+			   *RecipeCDO->GetPathName(), *BuildingItem->GetPathName());
+		return false;
+	}
+	const TSubclassOf<AFGBuildable> BuildableClass = UFGBuildingDescriptor::GetBuildableClass(BuildingDesc);
+	if (not BuildableClass) {
+		UE_LOG(LogTh3RootInstance, Error, TEXT("Building Descriptor %s has invalid buildable class"),
+			   *BuildingItem->GetPathName());
+		return false;
+	}
+	const TSubclassOf<AFGBuildableGeneratorFuel> BuildableGen = *BuildableClass;
+	if (not BuildableGen) {
+		UE_LOG(LogTh3RootInstance, Error, TEXT("Building Descriptor %s has buildable %s which is not a fuel generator"),
+			   *BuildingItem->GetPathName(), *BuildableClass->GetPathName());
+		return false;
+	}
+	UE_LOG(LogTh3RootInstance, Warning, TEXT("Considering Fuel Generator %s"), *BuildableGen->GetPathName());
+	UE_LOG(LogTh3RootInstance, Warning, TEXT("Available Fuel Classes:"));
+	const TArray<TSubclassOf<UFGItemDescriptor>>& AvailableFuels = BuildableGen.GetDefaultObject()->GetAvailableFuelClasses(nullptr);
+	Algo::ForEach(AvailableFuels, [](const TSubclassOf<UFGItemDescriptor> FuelClass) {
+		UE_LOG(LogTh3RootInstance, Warning, TEXT("  - %s (Energy = %f)"), *FuelClass->GetPathName(), UFGItemDescriptor::GetEnergyValue(FuelClass));
+	});
+	const TArray<TSoftClassPtr<UFGItemDescriptor>>& DefaultFuels = BuildableGen.GetDefaultObject()->GetDefaultFuelClasses();
+	Algo::ForEach(DefaultFuels, [](const TSoftClassPtr<UFGItemDescriptor> FuelClassPtr) {
+		const TSubclassOf<UFGItemDescriptor> FuelClass = FuelClassPtr.LoadSynchronous();
+		UE_LOG(LogTh3RootInstance, Warning, TEXT("  - %s (Energy = %f)"), *FuelClass->GetPathName(), UFGItemDescriptor::GetEnergyValue(FuelClass));
+	});
+	UE_LOG(LogTh3RootInstance, Warning, TEXT("Supplemental Resource Class:"));
+	const TSubclassOf<UFGItemDescriptor> SupplementalRes = BuildableGen.GetDefaultObject()->GetSupplementalResourceClass();
+	if (SupplementalRes) {
+		UE_LOG(LogTh3RootInstance, Warning, TEXT("  - %s (Energy = %f)"), *SupplementalRes->GetPathName(), UFGItemDescriptor::GetEnergyValue(SupplementalRes));
+	}
+	return true;
 }
 
 void UTh3RootInstance::ProcUnlockRecipe(UFGUnlock* InUnlock)
@@ -247,7 +338,8 @@ void UTh3RootInstance::ProcUnlockRecipe(UFGUnlock* InUnlock)
 	UE_LOG(LogTh3RootInstance, Verbose, TEXT("Processing Recipe Unlock %s"), *Unlock->GetPathName());
 	ModifiedUnlockRecipes.Add(Unlock);
 	TArray<TSubclassOf<UFGRecipe>> NewRecipes;
-	Algo::TransformIf(Unlock->mRecipes, NewRecipes, TH3_PROJECTION_THIS(CanRecipeBeCompressed), TH3_PROJECTION_THIS(CompressRecipe));
+	Algo::TransformIf(Unlock->mRecipes, NewRecipes, TH3_PROJECTION_THIS(IsCraftingRecipeCompressible), TH3_PROJECTION_THIS(CompressCraftingRecipe));
+	//Algo::ForEach(Unlock->mRecipes, TH3_PROJECTION_THIS(IsBuildingRecipeCompressible));
 	Unlock->mRecipes.Append(NewRecipes);
 }
 
@@ -273,14 +365,26 @@ void UTh3RootInstance::CompressSchematicUnlocks(const TSubclassOf<UFGSchematic>&
 	Th3Utilities::ForEachDynDispatch(CDO->mUnlocks, DispatchTable);
 }
 
+void UTh3RootInstance::CompressOneSchematic(const TSoftClassPtr<UFGSchematic>& SchematicPtr)
+{
+	CompressSchematicUnlocks(SchematicPtr.Get());
+}
+
+template<typename T>
+static TSoftClassPtr<T> ToSoftClassPtr(const FSoftObjectPath& Path)
+{
+	return TSoftClassPtr<T>(Path);
+}
+
 void UTh3RootInstance::CompressAllSchematics()
 {
-	UE_LOG(LogTh3RootInstance, Display, TEXT("Looking for Schematics..."));
-	TSet<FTopLevelAssetPath> AllSchematics;
-	Th3Utilities::DiscoverSubclassesOf(AllSchematics, UFGSchematic::StaticClass());
-	UE_LOG(LogTh3RootInstance, Display, TEXT("Processing %d Schematics..."), AllSchematics.Num());
-	Th3Utilities::TransformForEach(AllSchematics, Th3Utilities::LoadTopLevelPathSync<UFGSchematic>, TH3_PROJECTION_THIS(CompressSchematicUnlocks));
-	UE_LOG(LogTh3RootInstance, Display, TEXT("Done processing schematics"));
+	const auto store_paths = [this](const TArray<FSoftObjectPath>& InPaths) {
+		Algo::Transform(InPaths, SchematicPtrs, &ToSoftClassPtr<UFGSchematic>);
+	};
+	const auto process_paths = [this]() {
+		Algo::ForEach(SchematicPtrs, TH3_PROJECTION_THIS(CompressOneSchematic));
+	};
+	Process(UFGSchematic::StaticClass(), store_paths, process_paths);
 }
 
 void UTh3RootInstance::DispatchLifecycleEvent(ELifecyclePhase Phase)
@@ -297,7 +401,9 @@ void UTh3RootInstance::DispatchLifecycleEvent(ELifecyclePhase Phase)
 		}
 		CompressAllSchematics();
 		UE_LOG(LogTh3RootInstance, Display, TEXT("Got %d recipes, %d (de)compression recipes and %d compressed items"), RecipeToCompressedMap.Num(), RecipesToRegister.Num(), ItemToCompressedMap.Num());
-		Algo::ForEach(RecipesToRegister, [&Registry](const auto& Recipe) { Registry->RegisterRecipe(TEXT("Th3RecipeMod"), Recipe); });
+		Algo::ForEach(RecipesToRegister, [&Registry](const auto& Recipe) {
+			Registry->RegisterRecipe(TEXT("Th3RecipeMod"), Recipe);
+		});
 		UE_LOG(LogTh3RootInstance, Display, TEXT("Done registering recipes"));
 	}
 }

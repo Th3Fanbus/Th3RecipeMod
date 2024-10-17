@@ -20,4 +20,7 @@ public:
 	~UTh3RootGame();
 	UGameInstanceModule* GetTh3RootInstance();
 	virtual void DispatchLifecycleEvent(ELifecyclePhase Phase) override;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Mod Configuration")
+	const TSubclassOf<UFGSchematic> SchematicClass;
 };

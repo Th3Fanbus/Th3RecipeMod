@@ -130,6 +130,30 @@ namespace Th3Utilities
 	}
 
 	/**
+	 * Conditionally applies a series of transforms to a range
+	 * and stores the results into a container
+	 *
+	 * @param  Input        Any iterable type
+	 * @param  Output       Container to hold the output
+	 * @param  TransMap     A `TArray<TPair<Predicate, Transform>>`, if `Predicate` is true for an element then `Transform` is applied to it
+	 * @param  SingleMatch  If true, only apply the first transform for which its predicate is true, else apply all matching transforms
+	 */
+	template <typename InT, typename OutT, typename PredicateT, typename TransformT>
+	FORCEINLINE void TransformIfMulti(const InT& Input, OutT&& Output, const TArray<TPair<PredicateT, TransformT>>& TransMap, const bool SingleMatch = true)
+	{
+		for (const auto& Value : Input) {
+			for (const TPair<PredicateT, TransformT>& TransPair : TransMap) {
+				if (Invoke(TransPair.Key, Value)) {
+					Output.Add(Invoke(TransPair.Value, Value));
+					if (SingleMatch) {
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	/**
 	 * Applies class specific transforms to a range
 	 * and stores the results into a single container.
 	 *
@@ -141,9 +165,9 @@ namespace Th3Utilities
 	FORCEINLINE void TransformDynDispatch(const InT& Input, OutT&& Output, const TMap<ClassT, TransformT>& TransMap)
 	{
 		for (const auto& Value : Input) {
-			for (const TPair<ClassT, TransformT>& TransP : TransMap) {
-				if (Value->GetClass()->IsChildOf(TransP.Key)) {
-					Output.Append(Invoke(TransP.Value, Value));
+			for (const TPair<ClassT, TransformT>& TransPair : TransMap) {
+				if (Value->GetClass()->IsChildOf(TransPair.Key)) {
+					Output.Append(Invoke(TransPair.Value, Value));
 					break;
 				}
 			}
@@ -216,10 +240,10 @@ namespace Th3Utilities
 		return TSoftClassPtr<T>(FSoftObjectPath(Path)).LoadSynchronous();
 	}
 
-	UClass* GenerateNewClass(const TCHAR* Package, FString Name, UClass* ParentClass);
-	void DumpObjectProperties(UObject* Obj, const FString& Indent, FString& Data);
-	void SaveObjectProperties(UObject* Obj, const FString& FolderName, FString& Data);
-	FORCEINLINE void SaveObjectProperties(UObject* Obj, const FString& FolderName)
+	UClass* GenerateNewClass(const FString& Package, const FString& Name, UClass* ParentClass);
+	void DumpObjectProperties(const UObject* Obj, const FString& Indent, FString& Data);
+	void SaveObjectProperties(const UObject* Obj, const FString& FolderName, FString& Data);
+	FORCEINLINE void SaveObjectProperties(const UObject* Obj, const FString& FolderName)
 	{
 		FString Data;
 		SaveObjectProperties(Obj, FolderName, Data);
@@ -230,16 +254,6 @@ namespace Th3Utilities
 		DuplicateObjectProperties(OrigClass->GetDefaultObject(), NewClass->GetDefaultObject());
 	}
 	void DiscoverSubclassesOf(TSet<FTopLevelAssetPath>& out_AllClasses, UClass* BaseClass);
-
-	template<typename T> TSubclassOf<T> LoadClassForName(const TCHAR* PathName)
-	{
-		UClass* Class = LoadClass<T>(nullptr, PathName);
-		if (not Class) {
-			UE_LOG(LogTh3Utilities, Error, TEXT("Could not get class for %s"), PathName);
-			return nullptr;
-		}
-		return Class;
-	}
 
 	/* Trying to copy Blueprint classes with an UberGraphFrame attribute fails miserably */
 	template<typename T> TSubclassOf<T> AvoidClassUberGraphFrame(const TSubclassOf<T>& OrigClass)
@@ -260,7 +274,7 @@ namespace Th3Utilities
 	template<typename T> TSubclassOf<T> CopyClassTo(const TSubclassOf<T>& OrigClass, const FString& PackageName, const FString& ClassName)
 	{
 		UE_LOG(LogTh3Utilities, Verbose, TEXT("[CopyClassTo] Generating new class %s %s"), *PackageName, *ClassName);
-		TSubclassOf<T> NewClass = GenerateNewClass(*PackageName, ClassName, AvoidClassUberGraphFrame(OrigClass));
+		TSubclassOf<T> NewClass = GenerateNewClass(PackageName, ClassName, AvoidClassUberGraphFrame(OrigClass));
 		if (not NewClass) {
 			UE_LOG(LogTh3Utilities, Error, TEXT("Failed to copy class into %s"), *ClassName);
 			return nullptr;
